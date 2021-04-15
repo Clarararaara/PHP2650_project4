@@ -1,0 +1,977 @@
+---
+title: "Project 4"
+author: "Clara"
+
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(keras)
+
+```
+
+
+```{r}
+load("car_clean.RData")
+#complete cases without source, severity,impact
+df_clean = df_clean[, -c(1, 2, 24)]
+df_clean=df_clean[complete.cases(df_clean),]
+#split 2020 and before 
+yr2020 <- df_clean$Year == '2020'
+df20 <- df_clean[yr2020, ]
+df_old <- df_clean[!yr2020, ]
+```
+
+
+```{r}
+#remove start latitude and start longitude (remove state for now, because too many levels); Remove Year 
+car20_mat <- model.matrix(duration~., df20[, -c(1, 2, 4, 18)])
+car20_mat <- car20_mat[,2:ncol(car20_mat)]
+carold_mat <- model.matrix(duration~., df_old[, -c(1, 2, 4, 18)])
+carold_mat <- carold_mat[,2:ncol(carold_mat)]
+
+set.seed(1)
+
+index <- sample(1:nrow(df20), floor(0.2*nrow(df20)), replace = FALSE)
+train20_x <- car20_mat[-index,]
+train20_y <- df20$duration[-index]
+test20_x <- car20_mat[index,] 
+test20_y <- df20$duration[index]
+
+index2 <- sample(1:nrow(df_old), floor(0.2*nrow(df_old)), replace = FALSE)
+trainold_x <- carold_mat[-index2,]
+trainold_y <- df_old$duration[-index2]
+testold_x <- carold_mat[index2,] 
+testold_y <- df_old$duration[index2]
+```
+
+
+```{r}
+# Scale x
+train20_means <- apply(train20_x, 2, mean)
+train20_sds <- apply(train20_x, 2, sd)
+train20_x <- sweep(sweep(train20_x, 2L, train20_means), 2, train20_sds, "/")
+test20_x <- sweep(sweep(test20_x, 2L, train20_means), 2, train20_sds, "/")
+
+trainold_means <- apply(trainold_x, 2, mean)
+trainold_sds <- apply(trainold_x, 2, sd)
+trainold_x <- sweep(sweep(trainold_x, 2L, trainold_means), 2, trainold_sds, "/")
+testold_x <- sweep(sweep(testold_x, 2L, trainold_means), 2, trainold_sds, "/")
+
+##Scale y 
+
+
+train20_ymeans <- mean(train20_y)
+train20_ysds <- sd(train20_y)
+train20_y <- scale(train20_y, center = train20_ymeans, scale = train20_ysds)
+test20_y <- scale(test20_y, center = train20_ymeans, scale = train20_ysds)
+
+trainold_ymeans <- mean(trainold_y)
+trainold_ysds <- sd(trainold_y)
+trainold_y <- scale(trainold_y, center = trainold_ymeans, scale = trainold_ysds)
+testold_y <- scale(testold_y, center = trainold_ymeans, scale = trainold_ysds)
+```
+
+
+### First model 
+```{r}
+# Create network architecture with dropout
+model1 <- keras_model_sequential() %>%
+  # start with units the same as the number of columns
+  layer_dense(units = 26, activation = "relu", input_shape = ncol(train20_x)) %>%
+  #layer_dropout(rate = 0.5)%>%
+  layer_dense(units = 26, activation = "relu") %>%
+  #layer_dropout(rate = 0.5)%>%
+  layer_dense(units = 1, activation = "linear")
+summary(model1) 
+```
+```{r}
+model1 %>% compile(
+  optimizer = 'adam', 
+  loss = 'mse',
+  metrics ='mse'
+)
+```
+
+```{r}
+set.seed(1)
+history0_20 <- model1%>%  
+  fit(
+    x = train20_x,
+    y = train20_y,
+    epochs = 100,
+    validation_split = 0.2
+    #callbacks = callback_early_stopping(monitor="val_loss", patience = 4) #look at validation loss to early stop the model
+  )
+```
+
+```{r}
+plot(history0_20)+ labs(title = 'Initial model on 2020 dataset')+theme_classic()+theme(plot.title = element_text(hjust = 0.5))
+```
+
+
+```{r}
+set.seed(1)
+history1_20 <- model1%>%  
+  fit(
+    x = train20_x,
+    y = train20_y,
+    epochs = 50,
+    validation_split = 0.2,
+    batch_size= 100
+    #callbacks = callback_early_stopping(monitor="val_loss", patience = 4) #look at validation loss to early stop the model
+  )
+```
+
+```{r}
+plot(history1_20)+ labs(title = 'Initial model on 2020 dataset (optimizer: adam)')+theme_classic()+theme(plot.title = element_text(hjust = 0.5))
+```
+
+
+```{r}
+## Calculate RMSE from the prediction 
+## since X and y are both scaled, need to convert y back by multiply sd and add mean 
+pred_y_scaled = predict(model1, test20_x)
+pred20_y1 = pred_y_scaled*train20_ysds+train20_ymeans
+test20_y_ori = test20_y*train20_ysds+train20_ymeans
+
+cat('RMSE of the test set is ',sqrt(mean((pred20_y1-test20_y_ori)^2)))
+## RMSE is 52.82, while the RF's RMSE is 51.65
+
+```
+
+```{r}
+##change optimizer?
+model1 %>% compile(
+  optimizer = 'rmsprop', 
+  loss = 'mse',
+  metrics ='mse'
+)
+
+```
+
+```{r}
+set.seed(1)
+history1.1_20 <- model1%>%  
+  fit(
+    x = train20_x,
+    y = train20_y,
+    epochs = 50,
+    validation_split = 0.2, 
+    batch_size = 100
+    #callbacks = callback_early_stopping(monitor="val_loss", patience = 4) #look at validation loss to early stop the model
+  )
+```
+
+```{r}
+plot(history1.1_20)+ labs(title = 'Initial model on 2020 dataset(optimizer: rmsprop)')+theme_classic()+theme(plot.title = element_text(hjust = 0.5))
+```
+
+```{r}
+##change optimizer?
+model1 %>% compile(
+  optimizer = 'sgd', 
+  loss = 'mse',
+  metrics ='mse'
+)
+
+```
+
+```{r}
+set.seed(1)
+history1.2_20 <- model1%>%  
+  fit(
+    x = train20_x,
+    y = train20_y,
+    epochs = 50,
+    validation_split = 0.2, 
+    batch_size = 100
+    #callbacks = callback_early_stopping(monitor="val_loss", patience = 4) #look at validation loss to early stop the model
+  )
+```
+
+```{r}
+plot(history1.2_20)+ labs(title = 'Initial model on 2020 dataset(optimizer: sgd)')+theme_classic()+theme(plot.title = element_text(hjust = 0.5))
+```
+
+```{r}
+set.seed(1)
+history1.3_20 <- model1%>%  
+  fit(
+    x = train20_x,
+    y = train20_y,
+    epochs = 50,
+    validation_split = 0.2, 
+    batch_size = 200
+    #callbacks = callback_early_stopping(monitor="val_loss", patience = 4) #look at validation loss to early stop the model
+  )
+```
+
+```{r}
+plot(history1.3_20)+ labs(title = 'Initial model on 2020 dataset(optimizer: adam, batch size: 200)')+theme_classic()+theme(plot.title = element_text(hjust = 0.5))
+```
+
+```{r}
+set.seed(1)
+## add one more layer
+model2 <- keras_model_sequential() %>%
+  # start with units the same as the number of columns
+  layer_dense(units = ncol(train20_x), activation = "relu", input_shape = ncol(train20_x)) %>%
+  #layer_dropout(rate = 0.5)%>%
+  layer_dense(units = ncol(train20_x), activation = "relu") %>%
+  layer_dense(units = ncol(train20_x), activation = "relu") %>%
+  #layer_dropout(rate = 0.5)%>%
+  layer_dense(units = 1, activation = "linear")
+summary(model2) 
+
+model2 %>% compile(
+  optimizer = 'adam', 
+  loss = 'mse',
+  metrics ='mse'
+)
+```
+
+```{r}
+set.seed(1)
+history2.1_20 <- model2%>%  
+  fit(
+    x = train20_x,
+    y = train20_y,
+    epochs = 50,
+    validation_split = 0.2, 
+    batch_size = 200
+    #callbacks = callback_early_stopping(monitor="val_loss", patience = 4) #look at validation loss to early stop the model
+  )
+```
+
+
+```{r}
+set.seed(1)
+history2.1.2_20 <- model2%>%  
+  fit(
+    x = train20_x,
+    y = train20_y,
+    epochs = 50,
+    validation_split = 0.2, 
+    batch_size = 500
+    #callbacks = callback_early_stopping(monitor="val_loss", patience = 4) #look at validation loss to early stop the model
+  )
+```
+
+```{r}
+plot(history2.1.2_20)+ labs(title = '4-layer model on 2020 dataset(optimizer: adam, batch size: 500)')+theme_classic()+theme(plot.title = element_text(hjust = 0.5))
+```
+
+
+```{r}
+set.seed(1)
+history2.1.3_20 <- model2%>%  
+  fit(
+    x = train20_x,
+    y = train20_y,
+    epochs = 50,
+    validation_split = 0.2, 
+    batch_size = floor(0.0015*nrow(train20_x))  ##1365
+    #callbacks = callback_early_stopping(monitor="val_loss", patience = 4) #look at validation loss to early stop the model
+  )
+```
+
+```{r}
+## Calculate RMSE from the prediction 
+## since X and y are both scaled, need to convert y back by multiply sd and add mean 
+model2%>%evaluate(test20_x, test20_y) ## tese mse = 0.70
+pred_y_scaled = predict(model2, test20_x)
+pred20_y = pred_y_scaled*train20_ysds+train20_ymeans
+test20_y_ori = test20_y*train20_ysds+train20_ymeans
+
+cat('RMSE of the test set is ',sqrt(mean((pred20_y-test20_y_ori)^2)))
+## RMSE is 52.5, while the RF's RMSE is 51.65
+
+```
+
+
+```{r}
+## 2 hidden layer add dropout rate 0.5
+model2.1 <- keras_model_sequential() %>%
+  layer_dense(units = ncol(train20_x), activation = "relu", input_shape = ncol(train20_x)) %>%
+  layer_dropout(rate = 0.5)%>%
+  layer_dense(units = ncol(train20_x), activation = "relu") %>%
+  layer_dropout(rate = 0.5)%>%
+  layer_dense(units = ncol(train20_x), activation = "relu") %>%
+  layer_dropout(rate = 0.5)%>%
+  layer_dense(units = 1, activation = "linear")
+summary(model2.1) 
+
+model2.1 %>% compile(
+  optimizer = 'adam', 
+  loss = 'mse',
+  metrics ='mse'
+)
+```
+
+```{r}
+set.seed(1)
+history2.2_20 <- model2.1%>%  
+  fit(
+    x = train20_x,
+    y = train20_y,
+    epochs = 50,
+    validation_split = 0.2, 
+    batch_size = 500
+  #  callbacks = callback_early_stopping(monitor="val_loss", patience = 4) #look at validation loss to early stop the model
+  )
+
+## too many dropout layer interepts the learning on the training set 
+```
+
+```{r}
+model2.1%>%evaluate(test20_x, test20_y) ## test mse 0.75
+```
+
+```{r}
+## 2 hidden layer add dropout rate 0.5
+model2.2 <- keras_model_sequential() %>%
+  layer_dense(units = ncol(train20_x), activation = "relu", input_shape = ncol(train20_x)) %>%
+  layer_dense(units = ncol(train20_x), activation = "relu") %>%
+  layer_dropout(rate = 0.5)%>%
+  layer_dense(units = ncol(train20_x), activation = "relu") %>%
+  layer_dense(units = 1, activation = "linear")
+summary(model2.2) 
+
+model2.2 %>% compile(
+  optimizer = 'adam', 
+  loss = 'mse',
+  metrics ='mse'
+)
+```
+
+
+```{r}
+set.seed(1)
+history2.3_20 <- model2.2%>%  
+  fit(
+    x = train20_x,
+    y = train20_y,
+    epochs = 50,
+    validation_split = 0.2, 
+    batch_size = 500
+  #  callbacks = callback_early_stopping(monitor="val_loss", patience = 4) #look at validation loss to early stop the model
+  )
+
+```
+
+```{r}
+plot(history2.3_20)+labs(title = '4 layer model on 2020 dataset(with One dropout layer)')+theme_classic()+theme(plot.title = element_text(hjust = 0.5))
+```
+
+
+```{r}
+model2.2%>%evaluate(test20_x, test20_y, verbose = 0) ## test mse 0.72
+```
+
+```{r}
+set.seed(1)
+history2.4_20 <- model2.2%>%  
+  fit(
+    x = train20_x,
+    y = train20_y,
+    epochs = 50,
+    validation_split = 0.2, 
+    batch_size = 500,
+    callbacks = callback_early_stopping(monitor="val_loss", patience = 4) #look at validation loss to early stop the model
+  )
+
+```
+
+```{r}
+history2.4_20$params$epochs = length(history2.4_20$metrics$loss)
+plot(history2.4_20)+labs(title = '4 layer model on 2020 dataset(with One dropout layer and early stop)')+theme_classic()+theme(plot.title = element_text(hjust = 0.5))
+```
+
+
+```{r}
+model2.2%>%evaluate(test20_x, test20_y, verbose = 0) ## test mse 0.72
+```
+
+```{r}
+pred_y_scaled = predict(model2.2, test20_x)
+pred20_y = pred_y_scaled*train20_ysds+train20_ymeans
+test20_y_ori = test20_y*train20_ysds+train20_ymeans
+
+cat('RMSE of the test set is ',sqrt(mean((pred20_y-test20_y_ori)^2)))
+## RMSE is 53.20, while the RF's RMSE is 51.65
+```
+
+
+```{r}
+## 2 hidden layer add dropout rate 0.5
+model2.3 <- keras_model_sequential() %>%
+  layer_dense(units = ncol(train20_x), activation = "relu", input_shape = ncol(train20_x)) %>%
+  layer_dropout(rate = 0.5)%>%
+  layer_dense(units = ncol(train20_x), activation = "relu") %>%
+  layer_dropout(rate = 0.5)%>%
+  layer_dense(units = ncol(train20_x), activation = "relu") %>%
+  layer_dense(units = 1, activation = "linear")
+summary(model2.3) 
+
+model2.3 %>% compile(
+  optimizer = 'adam', 
+  loss = 'mse',
+  metrics ='mse'
+)
+```
+
+```{r}
+set.seed(1)
+history2.5_20 <- model2.3%>%  
+  fit(
+    x = train20_x,
+    y = train20_y,
+    epochs = 50,
+    validation_split = 0.2, 
+    batch_size = 500,
+    callbacks = callback_early_stopping(monitor="val_loss", patience = 4) #look at validation loss to early stop the model
+  )
+
+```
+
+
+```{r}
+model2.3%>%evaluate(test20_x, test20_y, verbose = 0)
+```
+
+```{r}
+## 2 hidden layer add L1 regularizer
+model2.4 <- keras_model_sequential() %>%
+  layer_dense(units = ncol(train20_x), activation = "relu", input_shape = ncol(train20_x), regularizer_l1(l = 0.01)) %>%
+  layer_dense(units = ncol(train20_x), activation = "relu") %>%
+  layer_dense(units = ncol(train20_x), activation = "relu") %>%
+  layer_dense(units = 1, activation = "linear", regularizer_l1(l = 0.01))
+summary(model2.4) 
+
+model2.4 %>% compile(
+  optimizer = 'adam', 
+  loss = 'mse',
+  metrics ='mse'
+)
+```
+
+```{r}
+set.seed(1)
+history2.6_20 <- model2.4%>%  
+  fit(
+    x = train20_x,
+    y = train20_y,
+    epochs = 50,
+    validation_split = 0.2, 
+    batch_size = 500,
+    #callbacks = callback_early_stopping(monitor="val_loss", patience = 4) #look at validation loss to early stop the model
+  )
+
+```
+
+
+```{r}
+model2.4%>%evaluate(test20_x, test20_y, verbose = 0)
+```
+
+```{r}
+## 2 hidden layer add L1 regularizer
+model2.5 <- keras_model_sequential() %>%
+  layer_dense(units = ncol(train20_x), activation = "relu", input_shape = ncol(train20_x), regularizer_l1(l = 0.01)) %>%
+  layer_dense(units = ncol(train20_x), activation = "relu", regularizer_l1(l = 0.01)) %>%
+  layer_dense(units = ncol(train20_x), activation = "relu", regularizer_l1(l = 0.01)) %>%
+  layer_dense(units = 1, activation = "linear", regularizer_l1(l = 0.01))
+summary(model2.5) 
+
+model2.5 %>% compile(
+  optimizer = 'adam', 
+  loss = 'mse',
+  metrics ='mse'
+)
+```
+
+```{r}
+set.seed(1)
+history2.7_20 <- model2.5%>%  
+  fit(
+    x = train20_x,
+    y = train20_y,
+    epochs = 50,
+    validation_split = 0.2, 
+    batch_size = 500,
+    #callbacks = callback_early_stopping(monitor="val_loss", patience = 4) #look at validation loss to early stop the model
+  )
+
+```
+
+
+```{r}
+model2.5%>%evaluate(test20_x, test20_y, verbose = 0)
+```
+
+```{r}
+history2.7_20$params$epochs = length(history2.7_20$metrics$loss)
+plot(history2.7_20)+labs(title = '4 layer model on 2020 dataset(with L1 regularizer(0.01) on all layers)')+theme_classic()+theme(plot.title = element_text(hjust = 0.5))
+```
+
+```{r}
+## 2 hidden layer add L1 regularizer
+model2.6 <- keras_model_sequential() %>%
+  layer_dense(units = ncol(train20_x), activation = "relu", input_shape = ncol(train20_x), regularizer_l1(l = 0.1)) %>%
+  layer_dense(units = ncol(train20_x), activation = "relu", regularizer_l1(l = 0.1)) %>%
+  layer_dense(units = ncol(train20_x), activation = "relu", regularizer_l1(l = 0.1)) %>%
+  layer_dense(units = 1, activation = "linear", regularizer_l1(l = 0.1))
+summary(model2.6) 
+
+model2.6 %>% compile(
+  optimizer = 'adam', 
+  loss = 'mse',
+  metrics ='mse'
+)
+```
+
+```{r}
+set.seed(1)
+history2.8_20 <- model2.6%>%  
+  fit(
+    x = train20_x,
+    y = train20_y,
+    epochs = 50,
+    validation_split = 0.2, 
+    batch_size = 500,
+   # callbacks = callback_early_stopping(monitor="val_loss", patience = 4) #look at validation loss to early stop the model
+  )
+
+```
+
+
+```{r}
+model2.6%>%evaluate(test20_x, test20_y, verbose = 0)
+```
+```{r}
+plot(history2.8_20)+labs(title = '4 layer model on 2020 dataset(with L1 regularizer(0.1) on all layers)')+theme_classic()+theme(plot.title = element_text(hjust = 0.5))
+```
+
+
+
+```{r}
+set.seed(1)
+history2.9_20 <- model2.6%>%  
+  fit(
+    x = train20_x,
+    y = train20_y,
+    epochs = 50,
+    validation_split = 0.2, 
+    batch_size = 500,
+    callbacks = callback_early_stopping(monitor="val_loss", patience = 4) #look at validation loss to early stop the model
+  )
+
+```
+
+
+```{r}
+model2.6%>%evaluate(test20_x, test20_y, verbose = 0)
+```
+
+
+```{r}
+pred_y_scaled = predict(model2.6, test20_x)
+pred20_y = pred_y_scaled*train20_ysds+train20_ymeans
+test20_y_ori = test20_y*train20_ysds+train20_ymeans
+
+cat('RMSE of the test set is ',sqrt(mean((pred20_y-test20_y_ori)^2)))
+## RMSE is 52.92, while the RF's RMSE is 51.65
+```
+
+
+```{r}
+history2.9_20$params$epochs = length(history2.9_20$metrics$loss)
+plot(history2.9_20)+labs(title = '4 layer model on 2020 dataset(with L1 regularizer(0.1) on all layers)')+theme_classic()+theme(plot.title = element_text(hjust = 0.5))
+```
+
+
+
+
+## Model with 2 hidden layers
+
+```{r}
+set.seed(1)
+## add one more layer
+model3 <- keras_model_sequential() %>%
+  # start with units the same as the number of columns
+  layer_dense(units = ncol(train20_x), activation = "relu", input_shape = ncol(train20_x)) %>%
+  #layer_dropout(rate = 0.5)%>%
+  layer_dense(units = ncol(train20_x), activation = "relu") %>%
+  layer_dense(units = ncol(train20_x), activation = "relu") %>%
+  layer_dense(units = ncol(train20_x), activation = "relu") %>%
+  #layer_dropout(rate = 0.5)%>%
+  layer_dense(units = 1, activation = "linear")
+summary(model3) 
+
+model3 %>% compile(
+  optimizer = 'adam', 
+  loss = 'mse',
+  metrics ='mse'
+)
+```
+
+```{r}
+set.seed(1)
+history3.1_20 <- model3%>%  
+  fit(
+    x = train20_x,
+    y = train20_y,
+    epochs = 50,
+    validation_split = 0.2, 
+    batch_size = 200
+    #callbacks = callback_early_stopping(monitor="val_loss", patience = 4) #look at validation loss to early stop the model
+  )
+```
+
+Fit the initial model on old data (2016-2019) set
+
+```{r}
+set.seed(1)
+history1_old <- model1%>%  
+  fit(
+    x = trainold_x,
+    y = trainold_y,
+    epochs = 100,
+    validation_split = 0.2
+    #callbacks = callback_early_stopping(monitor="val_loss", patience = 4) #look at validation loss to early stop the model
+  )
+```
+
+```{r}
+## validation mse and val mse look like two parallel lines. May be the model is not learning. 
+## modify the model add more layers?
+plot(history1_old)+ labs(title = 'Initial model on old dataset')+theme_classic()+theme(plot.title = element_text(hjust = 0.5))
+```
+
+```{r}
+
+## Calculate RMSE from the prediction 
+## since X and y are both scaled, need to convert y back by multiply sd and add mean 
+pred_y_scaled1 = predict(model1, testold_x)
+predold_y1 = pred_y_scaled1*trainold_ysds+trainold_ymeans
+testold_y_ori = testold_y*trainold_ysds+trainold_ymeans
+
+cat('RMSE of the test set is ',sqrt(mean((predold_y1-testold_y_ori)^2)))
+  ## last old RF RMSE is 35.1, this is 39.79
+```
+
+
+Fit 2nd  on old dataset
+```{r}
+set.seed(1)
+history2.1_old <- model2%>%  
+  fit(
+    x = trainold_x,
+    y = trainold_y,
+    epochs = 50,
+    validation_split = 0.2, 
+    batch_size = 500
+    #callbacks = callback_early_stopping(monitor="val_loss", patience = 4) #look at validation loss to early stop the model
+  )
+```
+
+```{r}
+set.seed(1)
+history3.1_old <- model3%>%  
+  fit(
+    x = trainold_x,
+    y = trainold_y,
+    epochs = 50,
+    validation_split = 0.2, 
+    batch_size = floor(0.001*nrow(trainold_x))##1749
+    #callbacks = callback_early_stopping(monitor="val_loss", patience = 4) #look at validation loss to early stop the model
+  )
+```
+
+```{r}
+set.seed(1)
+history3.2_old <- model3%>%  
+  fit(
+    x = trainold_x,
+    y = trainold_y,
+    epochs = 50,
+    validation_split = 0.2, 
+    batch_size = floor(0.01*nrow(trainold_x))##17499
+    #callbacks = callback_early_stopping(monitor="val_loss", patience = 4) #look at validation loss to early stop the model
+  )
+```
+
+```{r}
+set.seed(1)
+history3.3_old <- model3%>%  
+  fit(
+    x = trainold_x,
+    y = trainold_y,
+    epochs = 100,
+    validation_split = 0.2, 
+    batch_size = floor(0.1*nrow(trainold_x))##174995
+    #callbacks = callback_early_stopping(monitor="val_loss", patience = 4) #look at validation loss to early stop the model
+  )
+```
+
+
+
+## Model with 4 hidden layer
+```{r}
+set.seed(1)
+## add one more layer
+model4 <- keras_model_sequential() %>%
+  # start with units the same as the number of columns
+  layer_dense(units = ncol(train20_x), activation = "relu", input_shape = ncol(train20_x)) %>%
+  #layer_dropout(rate = 0.5)%>%
+  layer_dense(units = ncol(train20_x), activation = "relu") %>%
+  layer_dense(units = ncol(train20_x), activation = "relu") %>%
+  layer_dense(units = ncol(train20_x), activation = "relu") %>%
+  layer_dense(units = ncol(train20_x), activation = "relu") %>%
+  #layer_dropout(rate = 0.5)%>%
+  layer_dense(units = 1, activation = "linear")
+summary(model4) 
+
+model4 %>% compile(
+  optimizer = 'adam', 
+  loss = 'mse',
+  metrics ='mse'
+)
+```
+
+```{r}
+set.seed(1)
+history4.1_old <- model4%>%  
+  fit(
+    x = trainold_x,
+    y = trainold_y,
+    epochs = 50,
+    validation_split = 0.2, 
+    batch_size = floor(0.01*nrow(trainold_x))##174995
+    #callbacks = callback_early_stopping(monitor="val_loss", patience = 4) #look at validation loss to early stop the model
+  )
+```
+
+### Second model 
+```{r}
+# Create network architecture with 2 layers
+model2 <- keras_model_sequential() %>%
+  # start with units the same as the number of columns
+  layer_dense(units = ncol(train20_x), activation = "relu", input_shape = ncol(train20_x)) %>%
+  layer_dense(units = 1, activation = "linear")
+summary(model2) 
+```
+
+```{r}
+model2 %>% compile(
+  optimizer = 'adam', 
+  loss = 'mse',
+  metrics ='mse'
+)
+```
+
+```{r}
+set.seed(1)
+history2_20 <- model2%>%  
+  fit(
+    x = train20_x,
+    y = train20_y,
+    epochs =10,
+    validation_split = 0.2
+    #callbacks = callback_early_stopping(monitor="val_loss", patience = 4) #look at validation loss to early stop the model
+  )
+```
+
+```{r}
+plot(history2_20)+ labs(title = '2nd model on new dataset')+theme_classic()+theme(plot.title = element_text(hjust = 0.5))
+```
+
+```{r}
+## Calculate RMSE from the prediction 
+## since X and y are both scaled, need to convert y back by multiply sd and add mean 
+pred_y2_scaled = predict(model2, test20_x)
+pred20_y2 = pred_y2_scaled*train20_ysds+train20_ymeans
+test20_y2_ori = test20_y*train20_ysds+train20_ymeans
+
+cat('RMSE of the test set is ',sqrt(mean((pred20_y2-test20_y2_ori)^2)))
+## RMSE is 53.53, while the initial model is 52.8, RF's RMSE is 51.65
+```
+
+Slower learning rate and batches 
+
+```{r}
+model2 %>% compile(
+  optimizer = optimizer_adam(lr = 0.001), 
+  loss = 'mse',
+  metrics ='mse'
+)
+```
+
+```{r}
+set.seed(1)
+history3_20 <- model2%>%  
+  fit(
+    x = train20_x,
+    y = train20_y,
+    epochs =50,
+    validation_split = 0.2, 
+    batch_size = 16 #use batch size of 16 to update weight
+    #callbacks = callback_early_stopping(monitor="val_loss", patience = 4) #look at validation loss to early stop the model
+  )
+```
+
+```{r}
+plot(history3_20)+ xlim(1, 20)+ labs(title = '2nd model on new dataset')+theme_classic()+theme(plot.title = element_text(hjust = 0.5))
+```
+
+
+
+Fit second model on old set 
+
+```{r}
+set.seed(1)
+history2_old <- model2%>%  
+  fit(
+    x = trainold_x,
+    y = trainold_y,
+    epochs = 30,
+    validation_split = 0.2
+    #callbacks = callback_early_stopping(monitor="val_loss", patience = 4) #look at validation loss to early stop the model
+  )
+```
+
+```{r}
+## validation mse and val mse look like two parallel lines. May be the model is not learning. 
+## modify the model add more layers?
+plot(history2_old)+ labs(title = '2nd model on old dataset')+theme_classic()+theme(plot.title = element_text(hjust = 0.5))
+```
+
+```{r}
+## Calculate RMSE from the prediction 
+## since X and y are both scaled, need to convert y back by multiply sd and add mean 
+pred_y2_scaled = predict(model2, testold_x)
+predold_y2 = pred_y2_scaled*trainold_ysds+trainold_ymeans
+testold_y2_ori = testold_y*trainold_ysds+trainold_ymeans
+
+cat('RMSE of the test set is ',sqrt(mean((predold_y2-testold_y2_ori)^2))) 
+##RMSE of the test set is  39.87217
+```
+
+
+
+
+### third model 
+
+only one hidden layer and the hidden layer only contains half units as previous(13)
+
+```{r}
+# Create network architecture with 2 layers but half the input units
+model3 <- keras_model_sequential() %>%
+  # start with units the same as the number of columns
+  layer_dense(units = floor(0.5* ncol(train20_x)), activation = "relu", input_shape = ncol(train20_x)) %>%
+  layer_dense(units = 1, activation = "linear")
+summary(model3) 
+```
+
+
+```{r}
+model3 %>% compile(
+  optimizer = optimizer_adam(lr = 0.001), 
+  loss = 'mse',
+  metrics ='mse'
+)
+```
+```{r}
+#fit with 50 epoch 
+set.seed(1)
+history4_20 <- model3%>%  
+  fit(
+    x = train20_x,
+    y = train20_y,
+    epochs = 30,
+    validation_split = 0.2,
+    batch_size = 32
+    #callbacks = callback_early_stopping(monitor="val_loss", patience = 4) #look at validation loss to early stop the model
+  )
+```
+
+```{r}
+plot(history3_20)+ labs(title = '3rd model on new dataset')+theme_classic()+theme(plot.title = element_text(hjust = 0.5))
+```
+
+```{r}
+## Calculate RMSE from the prediction 
+## since X and y are both scaled, need to convert y back by multiply sd and add mean 
+pred_y3_scaled = predict(model3, test20_x)
+pred20_y3 = pred_y3_scaled*train20_ysds+train20_ymeans
+test20_y3_ori = test20_y*train20_ysds+train20_ymeans
+
+cat('RMSE of the test set is ',sqrt(mean((pred20_y3-test20_y3_ori)^2)))
+## RMSE is 53.5, while the initial model is 52.76, RF's RMSE is 51.65
+```
+
+```{r}
+model4 <- keras_model_sequential() %>%
+  # start with units the same as the number of columns
+  layer_dense(units = 1, activation = "linear", input_shape = ncol(train20_x))
+   
+
+model4 %>% compile(
+  optimizer = 'adam', 
+  loss = 'mse',
+  metrics ='mse'
+)
+
+history4_20 <- model4%>%  
+  fit(
+    x = train20_x,
+    y = train20_y,
+    epochs = 50,
+    validation_split = 0.2,
+    shuffle = T,
+    batch_size= 100 ## training on 100 observations and update weights
+    #callbacks = callback_early_stopping(monitor="val_loss", patience = 4) #look at validation loss to early stop the model
+  )
+
+```
+
+```{r}
+set.seed(1)
+model5 <- keras_model_sequential() %>%
+  # start with units the same as the number of columns
+  layer_dense(units = ncol(train20_x), activation = "relu", input_shape = ncol(train20_x)) %>%
+  layer_dense(units = ncol(train20_x), activation = "relu", input_shape = ncol(train20_x)) %>%
+  layer_dense(units = ncol(train20_x), activation = "relu", input_shape = ncol(train20_x)) %>%
+  layer_dense(units = 1, activation = 'linear')
+
+model5 %>% compile(
+  optimizer = optimizer_adam(lr = 0.01), 
+  loss = 'mse',
+  metrics ='mse'
+  )
+
+summary(model5)
+
+```
+
+
+```{r}
+history5_old <- model5%>%  
+  fit(
+    x = trainold_x,
+    y = trainold_y,
+    epochs = 50,
+    validation_split = 0.2
+    #callbacks = callback_early_stopping(monitor="val_loss", patience = 4) #look at validation loss to early stop the model
+  )
+```
+
+
+
+```{r}
+plot(history5_old)+ labs(title = '5th model on old dataset')+theme_classic()+theme(plot.title = element_text(hjust = 0.5))
+```
+
